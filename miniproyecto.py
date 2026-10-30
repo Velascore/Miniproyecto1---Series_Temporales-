@@ -18,6 +18,13 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
+import holidays  # noqa: E402
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf  # noqa: E402
+from statsmodels.stats.diagnostic import acorr_ljungbox  # noqa: E402
+from statsmodels.tsa.seasonal import STL  # noqa: E402
+from statsmodels.tsa.statespace.sarimax import SARIMAX  # noqa: E402
+from statsmodels.tsa.stattools import adfuller  # noqa: E402
+
 from comun import (RAIZ, backtest, cargar_serie, estacional_ingenuo,  # noqa: E402
                    fechas_siguientes, ingenuo)
 
@@ -33,23 +40,49 @@ RESULTADOS.mkdir(exist_ok=True)
 # Cambie estos cuatro datos por los de la serie del grupo y documente la
 # fuente en datos/README.md. La serie de ejemplo solo sirve para probar que
 # el guion corre.
-ARCHIVO = "datos/air_passengers.csv"
-FECHA = "Month"
-VALOR = "#Passengers"
+ARCHIVO = "datos/IPN32221N_cajas_carton_corrugado.csv"
+FECHA = "observation_date"
+VALOR = "IPN32221N"
 PERIODO = 12
 
 # Lo que se hizo con los huecos y con los datos atípicos, en una línea. Va
 # a la columna `decision` de la tabla de métricas.
-DECISION = "TODO: describa aquí la decisión sobre huecos y datos atípicos"
+DECISION = "Sin huecos; atipicos winsorizados al +-3*IQR del residuo STL (COVID 2020, rebote 2022)"
 
 
 def preparar(serie):
-    """TODO: aplique la decisión del grupo sobre huecos y datos atípicos.
+    """Aplica la decision del grupo sobre huecos y datos atipicos.
 
-    Por ejemplo, interpolar los meses vacíos o recortar el tramo afectado.
-    Debe devolver una serie sin NaN.
+    La serie IPN32221N no tiene meses vacios (0 NaN), asi que no hay huecos
+    que rellenar. Los valores atipicos no son errores de medicion sino dos
+    episodios economicos reales -el desplome de la COVID (abr-jun 2020) y el
+    rebote post-pandemia (feb-jun 2022)-, que inflan la varianza del residuo
+    y pueden dominar el ajuste del SARIMA. La decision es *winsorizarlos*:
+    recortar al limite, sin borrar meses, solo los puntos cuyo residuo de una
+    STL robusta (periodo 12) se sale de la banda Q1-3*IQR .. Q3+3*IQR. Asi se
+    conserva la forma y el numero de observaciones de la serie.
+
+    Devuelve una serie sin NaN.
     """
-    return serie
+    serie = serie.astype(float)
+    if serie.isna().any():  # por robustez: si hubiera huecos, se interpolan
+        serie = serie.interpolate(method="time")
+
+    stl = STL(serie, period=PERIODO, robust=True).fit()
+    resid = stl.resid
+    q1, q3 = resid.quantile(0.25), resid.quantile(0.75)
+    iqr = q3 - q1
+    bajo, alto = q1 - 3 * iqr, q3 + 3 * iqr
+
+    resid_rec = resid.clip(lower=bajo, upper=alto)
+    exceso = resid - resid_rec            # 0 donde no hay atipico
+    limpia = serie - exceso               # recorta solo los puntos fuera de banda
+    limpia.name = serie.name
+
+    n_rec = int((exceso != 0).sum())
+    print(f"Preparar: 0 huecos; {n_rec} atipicos winsorizados "
+          f"(banda residuo STL [{bajo:.2f}, {alto:.2f}])")
+    return limpia
 
 
 def graficar_serie(serie):
@@ -67,21 +100,94 @@ def graficar_serie(serie):
 # ============================================================
 
 def descomponer(serie):
-    """TODO: STL robusta con el periodo de la serie; guarde figuras/stl.png."""
-    raise NotImplementedError("descomposición STL")
+    """STL robusta con periodo 12; guarda figuras/stl.png e imprime la lectura."""
+    stl = STL(serie, period=PERIODO, robust=True).fit()
+
+    figura = stl.plot()
+    figura.set_size_inches(9, 7)
+    figura.suptitle(f"{VALOR}: descomposicion STL robusta (periodo {PERIODO})")
+    figura.tight_layout()
+    figura.savefig(FIGURAS / "stl.png", dpi=120)
+    plt.close(figura)
+
+    tendencia = stl.trend
+    estacional = stl.seasonal
+    resid = stl.resid
+
+    # Perfil estacional: valor tipico de cada mes (promedio del componente).
+    perfil = estacional.groupby(estacional.index.month).mean().sort_values()
+    mes_bajo, mes_alto = perfil.index[0], perfil.index[-1]
+    r_grande = resid.abs().idxmax()
+
+    print("STL - tendencia: inicia en {:.1f} ({:%Y-%m}), maximo {:.1f} "
+          "({:%Y-%m}), termina en {:.1f} ({:%Y-%m})".format(
+              tendencia.iloc[0], tendencia.index[0], tendencia.max(),
+              tendencia.idxmax(), tendencia.iloc[-1], tendencia.index[-1]))
+    print("STL - estacional: mes mas alto = {} ({:+.2f}), mes mas bajo = {} "
+          "({:+.2f})".format(mes_alto, perfil.iloc[-1], mes_bajo, perfil.iloc[0]))
+    print("STL - residuo mas grande: {:%Y-%m} ({:+.2f}); desv. tipica resid = "
+          "{:.2f}".format(r_grande, resid[r_grande], resid.std()))
+    return stl
 
 
 # ============================================================
 # 3. Estacionariedad e identificación
 # ============================================================
 
-def estacionariedad(serie):
-    """TODO: ADF sobre la serie, su diferencia regular, la estacional y las dos.
+def _adf(x, reg):
+    """Valor p de la prueba ADF (H0: raiz unitaria, es decir NO estacionaria)."""
+    stat, p, *_ = adfuller(x.dropna(), regression=reg, autolag="AIC")
+    return stat, p
 
-    Imprima el valor p de cada versión, elija d y D, y guarde la ACF y la
-    PACF de la serie elegida en figuras/acf_pacf.png. Devuelva (d, D).
+
+def estacionariedad(serie):
+    """ADF de las cuatro versiones, elige d y D, y guarda la ACF y la PACF.
+
+    regression: en el nivel se usa 'c' (la serie tiene media distinta de cero
+    pero su tendencia sube y baja, no es una recta determinista); en las
+    diferencias tambien 'c' (permite deriva). Como control se reporta 'ct'
+    sobre el nivel. H0 de ADF es raiz unitaria; p<0.05 => estacionaria.
     """
-    raise NotImplementedError("estacionariedad, ACF y PACF")
+    pruebas = [
+        ("serie (nivel)",              serie,                   "c"),
+        ("serie (nivel, tendencia)",   serie,                   "ct"),
+        ("dif regular d=1",            serie.diff(1),           "c"),
+        ("dif estacional D=1 (lag12)", serie.diff(PERIODO),     "c"),
+        ("ambas d=1 y D=1",            serie.diff(PERIODO).diff(1), "c"),
+    ]
+    print("ADF (H0: raiz unitaria; p<0.05 => estacionaria):")
+    for nombre, x, reg in pruebas:
+        stat, p = _adf(x, reg)
+        print(f"  {nombre:28s} reg={reg:2s}  p={p:.4f}  stat={stat:+.3f}")
+
+    # Eleccion: estacionalidad fuerte y gran caida de varianza con la
+    # diferencia estacional -> D=1; tras D=1 queda raiz unitaria regular
+    # (p alto), que desaparece al anadir la diferencia regular -> d=1.
+    d, D = 1, 1
+    print(f"  => se eligen d={d}, D={D}")
+
+    # ACF y PACF de la serie estacionaria (d=1, D=1).
+    estac = serie.diff(PERIODO).diff(1).dropna()
+    figura, ejes = plt.subplots(2, 1, figsize=(9, 6))
+    plot_acf(estac, lags=36, ax=ejes[0], zero=False)
+    plot_pacf(estac, lags=36, ax=ejes[1], method="ywm", zero=False)
+    ejes[0].set_title(f"ACF de la serie con d={d}, D={D}")
+    ejes[1].set_title(f"PACF de la serie con d={d}, D={D}")
+    figura.tight_layout()
+    figura.savefig(FIGURAS / "acf_pacf.png", dpi=120)
+    plt.close(figura)
+
+    # Rezagos fuera de las bandas +-1.96/sqrt(n) (para la lectura del informe).
+    from statsmodels.tsa.stattools import acf as _acf, pacf as _pacf
+    n = len(estac)
+    banda = 1.96 / np.sqrt(n)
+    va = _acf(estac, nlags=36, fft=False)
+    vp = _pacf(estac, nlags=36, method="ywm")
+    sig_acf = [k for k in range(1, 37) if abs(va[k]) > banda]
+    sig_pacf = [k for k in range(1, 37) if abs(vp[k]) > banda]
+    print(f"  ACF  fuera de banda (+-{banda:.3f}): {sig_acf}")
+    print(f"  PACF fuera de banda (+-{banda:.3f}): {sig_pacf}")
+    return d, D
 
 
 # ============================================================
@@ -90,37 +196,99 @@ def estacionariedad(serie):
 # Cada modelo es una función modelo(entrenamiento, h) que devuelve h
 # pronósticos y solo usa `entrenamiento`. Así entra al backtest común.
 
-def elegir_sarima(serie, d, D):
-    """TODO: rejilla pequeña de órdenes (p, q, P, Q) comparada por AIC.
+def _ajustar(entrenamiento, orden, estacional, exog=None):
+    """Ajusta un SARIMA(X). enforce_* en False para que la rejilla converja."""
+    return SARIMAX(entrenamiento, order=orden, seasonal_order=estacional,
+                   exog=exog, enforce_stationarity=False,
+                   enforce_invertibility=False).fit(disp=False)
 
-    Ajuste con toda la serie preparada, imprima la tabla de AIC, revise los
-    residuos del elegido con Ljung-Box y guarde figuras/residuos.png.
-    Devuelva el orden y el orden estacional elegidos.
+
+def elegir_sarima(serie, d, D):
+    """Rejilla pequena (p,q)(P,Q) por AIC, con d y D fijos; diagnostica residuos.
+
+    La rejilla la sugiere la ACF/PACF: parte regular de orden bajo (MA) y una
+    estacional de MA que necesita orden 2 por los satelites alrededor del
+    lag 12. Se comparan por AIC; del elegido se revisa Ljung-Box (sobre los
+    residuos estandarizados, descartando el burn-in de la diferenciacion) y se
+    guarda figuras/residuos.png. Devuelve (orden, orden_estacional).
     """
-    raise NotImplementedError("selección del SARIMA")
+    ordenes = [(0, 1), (1, 1), (0, 2), (1, 2)]   # (p, q)
+    estacionales = [(0, 1), (1, 1), (0, 2), (1, 2)]  # (P, Q)
+    filas = []
+    for p, q in ordenes:
+        for P, Q in estacionales:
+            try:
+                aic = _ajustar(serie, (p, d, q), (P, D, Q, PERIODO)).aic
+            except Exception:
+                aic = np.inf
+            filas.append({"orden": (p, d, q), "estacional": (P, D, Q, PERIODO),
+                          "AIC": aic})
+    tabla = pd.DataFrame(filas).sort_values("AIC").reset_index(drop=True)
+    print(f"Rejilla SARIMA por AIC ({len(tabla)} modelos, d={d}, D={D}):")
+    for _, r in tabla.head(5).iterrows():
+        print(f"  {r['orden']}{r['estacional']}  AIC={r['AIC']:.2f}")
+    orden = tabla.iloc[0]["orden"]
+    estacional = tabla.iloc[0]["estacional"]
+    print(f"  => elegido {orden}{estacional}  AIC={tabla.iloc[0]['AIC']:.2f}")
+
+    # Diagnostico de residuos del elegido (ajustado con toda la serie).
+    ajuste = _ajustar(serie, orden, estacional)
+    burn = d + D * PERIODO
+    resid = pd.Series(ajuste.standardized_forecasts_error[0],
+                      index=serie.index).iloc[burn:]
+    k = orden[0] + orden[2] + estacional[0] + estacional[2]  # p+q+P+Q
+    lb = acorr_ljungbox(resid, lags=[12, 24], model_df=k, return_df=True)
+    print("  Ljung-Box residuos:  LB(12) p={:.3f}   LB(24) p={:.3f}".format(
+        lb["lb_pvalue"].iloc[0], lb["lb_pvalue"].iloc[1]))
+
+    figura = ajuste.plot_diagnostics(figsize=(9, 7), lags=36)
+    figura.suptitle(f"Residuos de SARIMA{orden}{estacional}")
+    figura.tight_layout()
+    figura.savefig(FIGURAS / "residuos.png", dpi=120)
+    plt.close(figura)
+    return orden, estacional
 
 
 def modelo_sarima(orden, orden_estacional):
-    """TODO: devuelva la función modelo(entrenamiento, h) del SARIMA elegido."""
-    raise NotImplementedError("SARIMA en el backtest")
+    """Funcion modelo(entrenamiento, h) del SARIMA elegido para el backtest."""
+    def modelo(entrenamiento, h):
+        ajuste = _ajustar(entrenamiento, orden, orden_estacional)
+        return ajuste.forecast(h)
+    return modelo
 
 
 def exogenas(serie):
-    """TODO: DataFrame de variables conocidas de antemano, con el índice de la serie.
+    """Dias habiles de cada mes (EE. UU.): variable de calendario del indice.
 
-    Por ejemplo, el número de festivos o de días hábiles de cada mes. Debe
-    cubrir también los 12 meses que siguen al final de la serie.
+    Se conoce de antemano para cualquier mes futuro -depende solo del
+    calendario, no de la serie-, asi que nunca introduce fuga. Cubre el indice
+    de la serie y los 12 meses siguientes, para poder pronosticar.
     """
-    raise NotImplementedError("variables exógenas")
+    idx = pd.date_range(serie.index[0],
+                        serie.index[-1] + pd.offsets.MonthBegin(12), freq="MS")
+    festivos = holidays.US()
+    conteo = []
+    for mes in idx:
+        dias = pd.date_range(mes.replace(day=1),
+                             mes + pd.offsets.MonthEnd(0), freq="D")
+        conteo.append(sum(1 for dia in dias
+                          if dia.weekday() < 5 and dia.date() not in festivos))
+    return pd.DataFrame({"dias_habiles": conteo}, index=idx, dtype=float)
 
 
 def modelo_sarimax(orden, orden_estacional, x):
-    """TODO: devuelva modelo(entrenamiento, h) de un SARIMAX con exógenas x.
+    """Funcion modelo(entrenamiento, h) de un SARIMAX con la exogena x.
 
-    Use x.loc[entrenamiento.index] para ajustar y
-    x.loc[fechas_siguientes(entrenamiento, h)] para pronosticar.
+    Usa x.loc[entrenamiento.index] para ajustar y x en las h fechas
+    siguientes para pronosticar; esas fechas son calendario, no datos de la
+    serie posteriores al origen, de modo que no hay fuga.
     """
-    raise NotImplementedError("SARIMAX en el backtest")
+    def modelo(entrenamiento, h):
+        x_tr = x.loc[entrenamiento.index]
+        x_fut = x.loc[fechas_siguientes(entrenamiento, h)]
+        ajuste = _ajustar(entrenamiento, orden, orden_estacional, exog=x_tr)
+        return ajuste.forecast(h, exog=x_fut)
+    return modelo
 
 
 # ============================================================
