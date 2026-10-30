@@ -1,0 +1,5 @@
+modelo,decision,RMSE,MAE,MAPE
+"SARIMAX(0, 1, 2)(0, 1, 2, 12) + exógenas","Sin huecos; atipicos winsorizados al +-3*IQR del residuo STL (COVID 2020, rebote 2022)",1.63,1.37,1.51
+"SARIMA(0, 1, 2)(0, 1, 2, 12)","Sin huecos; atipicos winsorizados al +-3*IQR del residuo STL (COVID 2020, rebote 2022)",1.63,1.39,1.53
+estacional ingenuo,"Sin huecos; atipicos winsorizados al +-3*IQR del residuo STL (COVID 2020, rebote 2022)",2.17,1.88,2.09
+ingenuo,"Sin huecos; atipicos winsorizados al +-3*IQR del residuo STL (COVID 2020, rebote 2022)",3.36,2.8,3.13
