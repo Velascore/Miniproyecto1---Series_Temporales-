@@ -64,25 +64,67 @@ def preparar(serie):
 
     Devuelve una serie sin NaN.
     """
-    serie = serie.astype(float)
-    if serie.isna().any():  # por robustez: si hubiera huecos, se interpolan
-        serie = serie.interpolate(method="time")
-
-    stl = STL(serie, period=PERIODO, robust=True).fit()
-    resid = stl.resid
-    q1, q3 = resid.quantile(0.25), resid.quantile(0.75)
-    iqr = q3 - q1
-    bajo, alto = q1 - 3 * iqr, q3 + 3 * iqr
-
-    resid_rec = resid.clip(lower=bajo, upper=alto)
-    exceso = resid - resid_rec            # 0 donde no hay atipico
-    limpia = serie - exceso               # recorta solo los puntos fuera de banda
+    serie, resid, bajo, alto = _banda_atipicos(serie)
+    exceso = resid - resid.clip(bajo, alto)  # 0 donde no hay atipico
+    limpia = serie - exceso                  # recorta solo los puntos fuera de banda
     limpia.name = serie.name
 
     n_rec = int((exceso != 0).sum())
     print(f"Preparar: 0 huecos; {n_rec} atipicos winsorizados "
           f"(banda residuo STL [{bajo:.2f}, {alto:.2f}])")
     return limpia
+
+
+def _banda_atipicos(serie):
+    """STL robusta (periodo 12) y banda +-3*IQR de su residuo.
+
+    Devuelve (serie_sin_nan, residuo_stl, limite_bajo, limite_alto). El IQR se
+    calcula sobre el *residuo* -no sobre la serie cruda- para no confundir la
+    estacionalidad normal (picos de junio/octubre, valles de diciembre) con
+    datos atipicos.
+    """
+    serie = serie.astype(float)
+    if serie.isna().any():  # por robustez: si hubiera huecos, se interpolan
+        serie = serie.interpolate(method="time")
+    resid = STL(serie, period=PERIODO, robust=True).fit().resid
+    q1, q3 = resid.quantile(0.25), resid.quantile(0.75)
+    iqr = q3 - q1
+    return serie, resid, q1 - 3 * iqr, q3 + 3 * iqr
+
+
+def graficar_atipicos(serie):
+    """Boxplot del residuo STL antes y despues de winsorizar.
+
+    Muestra como el recorte a +-3*IQR elimina los atipicos y reduce la
+    dispersion del residuo; guarda figuras/atipicos_boxplot.png.
+    """
+    _, resid, bajo, alto = _banda_atipicos(serie)
+    resid_rec = resid.clip(bajo, alto)
+    fuera = resid[(resid < bajo) | (resid > alto)]
+
+    figura, ejes = plt.subplots(1, 2, figsize=(8, 5), sharey=True)
+    props = dict(marker="o", markerfacecolor="crimson", markersize=5, alpha=.7)
+    for eje, datos, titulo in [
+            (ejes[0], resid, f"Antes: {len(fuera)} atipicos (std {resid.std():.2f})"),
+            (ejes[1], resid_rec, f"Despues: winsorizado (std {resid_rec.std():.2f})")]:
+        eje.boxplot(datos.to_numpy(), whis=3.0, widths=.5, flierprops=props)
+        eje.axhline(alto, ls="--", lw=.8, color="gray")
+        eje.axhline(bajo, ls="--", lw=.8, color="gray")
+        eje.set_title(titulo, fontsize=10)
+        eje.set_xticks([])
+    ejes[0].set_ylabel("Residuo STL")
+    ejes[0].text(1.0, alto, "  +3*IQR", va="bottom", ha="left", fontsize=8, color="gray")
+    ejes[0].text(1.0, bajo, "  -3*IQR", va="top", ha="left", fontsize=8, color="gray")
+    # Anotar los tres atipicos mas extremos (por magnitud).
+    for fecha, val in fuera.reindex(fuera.abs().sort_values().index).iloc[-3:].items():
+        ejes[0].annotate(f"{fecha:%Y-%m}", (1, val), xytext=(1.12, val),
+                         fontsize=8, color="crimson", va="center")
+    figura.suptitle("Atipicos del residuo STL: winsorizacion a +-3*IQR")
+    figura.tight_layout()
+    figura.savefig(FIGURAS / "atipicos_boxplot.png", dpi=120)
+    plt.close(figura)
+    print(f"Atipicos boxplot: std residuo {resid.std():.2f} -> "
+          f"{resid_rec.std():.2f} tras winsorizar {len(fuera)} puntos")
 
 
 def graficar_serie(serie):
@@ -312,6 +354,7 @@ def main():
           f"{cruda.index[-1]:%Y-%m}, {cruda.isna().sum()} vacíos")
     serie = preparar(cruda)
     graficar_serie(serie)
+    graficar_atipicos(cruda)
 
     filas = [fila("ingenuo", serie, ingenuo),
              fila("estacional ingenuo", serie,

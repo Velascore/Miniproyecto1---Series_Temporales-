@@ -30,10 +30,19 @@ STL robusta (periodo 12), calcular el rango intercuartílico $IQR$ de su
 residuo y recortar al límite —sin borrar meses— los puntos cuyo residuo se
 sale de la banda $[Q_1 - 3\,IQR,\; Q_3 + 3\,IQR] = [-2{,}58,\; +2{,}64]$. Se
 winsorizaron **16 puntos**, casi todos de esos dos episodios, conservando la
-forma y el número de observaciones. La desviación típica del residuo STL baja
-de $1{,}42$ a $1{,}07$. Esta es la columna `decision` de la tabla:
+forma y el número de observaciones. Esta es la columna `decision` de la tabla:
 *"Sin huecos; atípicos winsorizados al ±3·IQR del residuo STL (COVID 2020,
 rebote 2022)"*.
+
+El $IQR$ se calcula sobre el **residuo de la STL**, no sobre la serie cruda:
+así la estacionalidad normal (picos de junio y octubre, valles de diciembre)
+no se confunde con datos atípicos. El boxplot compara el residuo **antes y
+después** de winsorizar: los 16 puntos fuera de la banda $\pm 3\,IQR$ —entre
+ellos 2022-03 ($+6{,}8$), 2018-04 ($+5{,}2$) y 2020-05 ($-6{,}0$)— se recortan
+al límite y desaparecen como atípicos; la desviación típica del residuo baja
+de $1{,}42$ a $1{,}06$.
+
+![Atípicos: boxplot del residuo STL antes y después](../figuras/atipicos_boxplot.png)
 
 ## 2. Componentes
 
