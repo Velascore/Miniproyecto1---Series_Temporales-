@@ -22,16 +22,14 @@ en `datos/README.md`.
 
 ## Integrantes
 
-Los grupos son de 3 integrantes.
+Entrega individual (autorizada por el profesor).
 
 Esta tabla identifica al grupo. Sin ella, o con algún dato incompleto, la
 entrega pierde el 20 %; quien no aparezca aquí no cuenta como parte del grupo.
 
 | Nombre completo | Código | Correo institucional |
 |---|---|---|
-| | | |
-| | | |
-| | | |
+| Camilo Andrés Velasco | 1144179583 | camilo_and.velasco@uao.edu.co |
 
 ## Entrega
 
