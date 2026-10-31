@@ -100,7 +100,7 @@ determinista— y se confirma con `'ct'`; en las diferencias también `'c'`
 | Ambas ($d=1,\,D=1$) | c | 0.0001 | Sí |
 
 **Elección: $d=1$, $D=1$.** La estacionalidad es fuerte (fuerza estacional
-$F_s = 0{,}79$) y la diferencia estacional baja mucho la varianza
+$F_s = 0{,}87$) y la diferencia estacional baja mucho la varianza
 ($23{,}4 \to 7{,}3$), lo que justifica $D=1$. Tras la diferencia estacional
 aún queda raíz unitaria en la parte regular ($p = 0{,}20$), que desaparece al
 añadir la diferencia regular: con ambas, $p = 0{,}0001$ y la varianza es la

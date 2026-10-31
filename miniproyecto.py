@@ -202,6 +202,16 @@ def estacionariedad(serie):
         stat, p = _adf(x, reg)
         print(f"  {nombre:28s} reg={reg:2s}  p={p:.4f}  stat={stat:+.3f}")
 
+    # Apoyo a la eleccion: fuerza estacional (Hyndman) y varianza por nivel de
+    # diferenciacion (la minima evita sobre-diferenciar).
+    comp = STL(serie, period=PERIODO, robust=True).fit()
+    fs = max(0.0, 1 - comp.resid.var() / (comp.seasonal + comp.resid).var())
+    print(f"  fuerza estacional Fs = {fs:.2f}")
+    print("  varianza:  serie={:.1f}  d=1={:.1f}  D=1={:.1f}  "
+          "d=1,D=1={:.2f}  d=2,D=1={:.2f}".format(
+              serie.var(), serie.diff().var(), serie.diff(PERIODO).var(),
+              serie.diff(PERIODO).diff().var(), serie.diff(PERIODO).diff(2).var()))
+
     # Eleccion: estacionalidad fuerte y gran caida de varianza con la
     # diferencia estacional -> D=1; tras D=1 queda raiz unitaria regular
     # (p alto), que desaparece al anadir la diferencia regular -> d=1.
